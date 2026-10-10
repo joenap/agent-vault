@@ -21,6 +21,7 @@ description: "Complete reference for all Agent Vault CLI commands."
     | `--port` | `14321` | Port to listen on. Also respects the `PORT` env var (common on PaaS platforms); the flag takes precedence. |
     | `-d`, `--detach` | `false` | Run in background (detached) mode |
     | `--password-stdin` | `false` | Read master password from stdin |
+    | `--mitm-host` | `--host` | Host the transparent MITM proxy binds to. Lets the proxy listen on an interface (e.g. a VM network) without exposing the API there. |
     | `--mitm-port` | `14322` | Port for the transparent MITM proxy. Enabled by default; set to `0` to disable. On first launch the root CA is created under `~/.agent-vault/ca/` — clients fetch it with [`agent-vault ca fetch`](#ca). Bind failures are non-fatal. |
     | `--log-level` | `info` | Log level: `info` (default) or `debug`. At `debug`, emits one structured line per proxied request on stderr covering method, host, path, matched service, injected credential key names, upstream status, and duration. Credential **values** are never logged. |
     | `--max-response-bytes` | `0` (unlimited) | Maximum response body bytes the MITM proxy streams back to agents. `0` means unlimited — responses are streamed with a small buffer so there is no memory risk. When a limit is set and the upstream response exceeds it, the proxy returns 502 (if the size is known upfront) or aborts the connection mid-stream (if chunked). Also respects `AGENT_VAULT_MAX_RESPONSE_BYTES`; the flag takes precedence. |
