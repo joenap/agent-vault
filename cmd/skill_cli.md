@@ -157,6 +157,10 @@ EOF
 
 When the human provides a refresh token during upload, it is validated immediately by refreshing against the provider. If the refresh fails, the upload is rejected.
 
+### Revoking
+
+`POST /v1/credentials/oauth/revoke` with `{"vault", "key", "revocation_url"}` (vault member or higher) revokes the stored refresh token at the provider (RFC 7009) and then deletes the credential. `revocation_url` must be https on the token endpoint's host; a credential uploaded without a token URL is deleted without a provider call. The reply is `{"revoked": bool, "error"?: string}`; the credential is deleted even when the provider call fails. 404 if the key has no OAuth credential. Only revoke when the human asks.
+
 ### After approval
 
 After the human approves an OAuth proposal, they may still need to complete the connection (enter client credentials, click Connect, or paste tokens). If your first request after `status: applied` returns 502 with `oauth_not_connected`, tell the user: "The OAuth connection isn't complete yet -- please finish connecting in the Agent Vault dashboard." Don't retry in a loop.

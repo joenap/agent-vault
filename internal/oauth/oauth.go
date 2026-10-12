@@ -136,6 +136,60 @@ func Refresh(ctx context.Context, cfg RefreshConfig) (*TokenResponse, error) {
 	return doTokenRequest(req)
 }
 
+// RevokeConfig holds the parameters for revoking a refresh token.
+type RevokeConfig struct {
+	URL             string
+	ClientID        string
+	ClientSecret    string
+	Token           string
+	TokenAuthMethod string
+}
+
+// Revoke revokes a refresh token per RFC 7009. Any 2xx reply is success;
+// its body is ignored (RFC 7009 §2.2 allows an empty one).
+func Revoke(ctx context.Context, cfg RevokeConfig) error {
+	form := url.Values{
+		"token":           {cfg.Token},
+		"token_type_hint": {"refresh_token"},
+	}
+
+	authMethod := cfg.TokenAuthMethod
+	if authMethod == "" {
+		authMethod = "client_secret_post"
+	}
+
+	applyClientAuth(form, cfg.ClientID, cfg.ClientSecret, authMethod)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, cfg.URL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return fmt.Errorf("oauth: building revoke request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+
+	if authMethod == "client_secret_basic" && cfg.ClientSecret != "" {
+		req.SetBasicAuth(cfg.ClientID, cfg.ClientSecret)
+	}
+
+	resp, err := TokenClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("oauth: sending revoke request: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("oauth: reading revoke response: %w", err)
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return &TokenError{
+			StatusCode: resp.StatusCode,
+			Body:       string(body),
+			Permanent:  IsPermanentError(resp.StatusCode),
+		}
+	}
+	return nil
+}
+
 // applyClientAuth adds client credentials to the form body when using
 // client_secret_post. For client_secret_basic the caller sets the header.
 func applyClientAuth(form url.Values, clientID, clientSecret, method string) {
