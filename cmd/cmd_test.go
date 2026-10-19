@@ -1002,22 +1002,3 @@ func TestServerLogLevelInvalidSurface(t *testing.T) {
 		_ = sc.Flags().Set("log-level", "info")
 	}
 }
-
-func TestMITMBindHost(t *testing.T) {
-	if got := mitmBindHost("127.0.0.1", ""); got != "127.0.0.1" {
-		t.Errorf("empty --mitm-host = %q, want --host", got)
-	}
-	if got := mitmBindHost("127.0.0.1", "192.168.64.1"); got != "192.168.64.1" {
-		t.Errorf("--mitm-host = %q, want 192.168.64.1", got)
-	}
-}
-
-func TestServerMITMHostFlagRegistered(t *testing.T) {
-	f := serverCmd.Flags().Lookup("mitm-host")
-	if f == nil {
-		t.Fatal("server --mitm-host flag not registered")
-	}
-	if f.DefValue != "" {
-		t.Errorf("--mitm-host default = %q, want empty (falls back to --host)", f.DefValue)
-	}
-}

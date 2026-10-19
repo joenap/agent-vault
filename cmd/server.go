@@ -81,8 +81,6 @@ var serverCmd = &cobra.Command{
 		host, _ := cmd.Flags().GetString("host")
 		detach, _ := cmd.Flags().GetBool("detach")
 		mitmPort, _ := cmd.Flags().GetInt("mitm-port")
-		mitmHostFlag, _ := cmd.Flags().GetString("mitm-host")
-		mitmHost := mitmBindHost(host, mitmHostFlag)
 		logLevelFlag, _ := cmd.Flags().GetString("log-level")
 		logLevelChanged := cmd.Flags().Changed("log-level")
 		maxRespBytes, _ := cmd.Flags().GetInt64("max-response-bytes")
@@ -97,7 +95,7 @@ var serverCmd = &cobra.Command{
 
 		// --- Detached child path: read master key + initialized flag from stdin pipe ---
 		if os.Getenv("_AGENT_VAULT_DETACHED") == "1" {
-			return runDetachedChild(mitmHost, addr, mitmPort, logger, maxRespBytes, maxReqBytes)
+			return runDetachedChild(host, addr, mitmPort, logger, maxRespBytes, maxReqBytes)
 		}
 
 		// Pre-flight before unlocking the vault: don't make the user type a
@@ -170,7 +168,7 @@ var serverCmd = &cobra.Command{
 			if logLevelChanged {
 				explicitLogLevel = &logLevelFlag
 			}
-			return spawnDetached(cmd, masterKey, initialized, host, mitmHost, port, mitmPort, addr, explicitLogLevel, maxRespBytes, maxReqBytes)
+			return spawnDetached(cmd, masterKey, initialized, host, port, mitmPort, addr, explicitLogLevel, maxRespBytes, maxReqBytes)
 		}
 
 		// --- Foreground path ---
@@ -184,7 +182,7 @@ var serverCmd = &cobra.Command{
 		srv.AttachTelemetry(tel)
 		shutdownLogs := attachLogSink(srv, db, logger)
 		defer shutdownLogs()
-		if err := attachServerExtensions(srv, mitmHost, mitmPort, masterKey.Key(), db, logger, maxRespBytes, maxReqBytes); err != nil {
+		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), db, logger, maxRespBytes, maxReqBytes); err != nil {
 			return err
 		}
 		captureServerStart(mitmPort, db.DialectName())
@@ -200,7 +198,7 @@ var serverCmd = &cobra.Command{
 // in server.Start: since the MITM proxy is default-on, environments that
 // cannot create ~/.agent-vault/ca/ (read-only FS, containers without HOME,
 // corrupted state) must still be able to run the core HTTP server.
-func attachMITMIfEnabled(srv *server.Server, mitmHost string, mitmPort int, masterKey []byte, db store.Store, maxRespBytes, maxReqBytes int64) error {
+func attachMITMIfEnabled(srv *server.Server, host string, mitmPort int, masterKey []byte, db store.Store, maxRespBytes, maxReqBytes int64) error {
 	if mitmPort <= 0 {
 		return nil
 	}
@@ -220,7 +218,7 @@ func attachMITMIfEnabled(srv *server.Server, mitmHost string, mitmPort int, mast
 		return nil
 	}
 	srv.AttachMITM(mitm.New(
-		net.JoinHostPort(mitmHost, strconv.Itoa(mitmPort)),
+		net.JoinHostPort(host, strconv.Itoa(mitmPort)),
 		mitm.Options{
 			CA:               caProv,
 			Sessions:         srv.SessionResolver(),
@@ -236,20 +234,10 @@ func attachMITMIfEnabled(srv *server.Server, mitmHost string, mitmPort int, mast
 	return nil
 }
 
-// mitmBindHost returns the MITM proxy bind host: --mitm-host when set,
-// otherwise --host. A separate host lets the proxy listen on an interface
-// (e.g. a VM network) without exposing the API there.
-func mitmBindHost(host, mitmHost string) string {
-	if mitmHost != "" {
-		return mitmHost
-	}
-	return host
-}
-
 // attachServerExtensions wires optional subsystems (MITM, Infisical) onto srv.
 // Both bootstrap paths (foreground and detached child) call this.
-func attachServerExtensions(srv *server.Server, mitmHost string, mitmPort int, masterKey []byte, db store.Store, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
-	if err := attachMITMIfEnabled(srv, mitmHost, mitmPort, masterKey, db, maxRespBytes, maxReqBytes); err != nil {
+func attachServerExtensions(srv *server.Server, host string, mitmPort int, masterKey []byte, db store.Store, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
+	if err := attachMITMIfEnabled(srv, host, mitmPort, masterKey, db, maxRespBytes, maxReqBytes); err != nil {
 		return err
 	}
 	attachInfisicalIfConfigured(srv, logger)
@@ -583,7 +571,7 @@ func readPasswordFromStdin() ([]byte, error) {
 
 // runDetachedChild is the entry point for the detached child process.
 // It reads 33 bytes from stdin: 32-byte master key + 1-byte initialized flag.
-func runDetachedChild(mitmHost, addr string, mitmPort int, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
+func runDetachedChild(host, addr string, mitmPort int, logger *slog.Logger, maxRespBytes, maxReqBytes int64) error {
 	buf := make([]byte, 33)
 	if _, err := io.ReadFull(os.Stdin, buf); err != nil {
 		return fmt.Errorf("reading master key from pipe: %w", err)
@@ -615,7 +603,7 @@ func runDetachedChild(mitmHost, addr string, mitmPort int, logger *slog.Logger, 
 	srv.AttachTelemetry(tel)
 	shutdownLogs := attachLogSink(srv, db, logger)
 	defer shutdownLogs()
-	if err := attachServerExtensions(srv, mitmHost, mitmPort, key, db, logger, maxRespBytes, maxReqBytes); err != nil {
+	if err := attachServerExtensions(srv, host, mitmPort, key, db, logger, maxRespBytes, maxReqBytes); err != nil {
 		return err
 	}
 	captureServerStart(mitmPort, db.DialectName())
@@ -625,7 +613,7 @@ func runDetachedChild(mitmHost, addr string, mitmPort int, logger *slog.Logger, 
 // spawnDetached re-execs the server as a background process, passing the master key + initialized flag via a pipe.
 // explicitLogLevel, when non-nil, forwards the parent's --log-level flag to the child so a flag-only
 // invocation (no env var) still takes effect after re-exec.
-func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host, mitmHost string, port, mitmPort int, addr string, explicitLogLevel *string, maxRespBytes, maxReqBytes int64) error {
+func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bool, host string, port, mitmPort int, addr string, explicitLogLevel *string, maxRespBytes, maxReqBytes int64) error {
 	defer masterKey.Wipe()
 
 	exe, err := os.Executable()
@@ -649,7 +637,7 @@ func spawnDetached(cmd *cobra.Command, masterKey *auth.MasterKey, initialized bo
 		return fmt.Errorf("opening log file: %w", err)
 	}
 
-	childArgs := []string{"server", "--port", strconv.Itoa(port), "--host", host, "--mitm-host", mitmHost, "--mitm-port", strconv.Itoa(mitmPort)}
+	childArgs := []string{"server", "--port", strconv.Itoa(port), "--host", host, "--mitm-port", strconv.Itoa(mitmPort)}
 	if explicitLogLevel != nil {
 		childArgs = append(childArgs, "--log-level", *explicitLogLevel)
 	}
@@ -787,7 +775,6 @@ func init() {
 	serverCmd.Flags().String("database-url", "", "PostgreSQL connection URL (also respects DATABASE_URL env var)")
 	serverCmd.Flags().BoolP("detach", "d", false, "run server in background after unlocking")
 	serverCmd.Flags().Bool("password-stdin", false, "read master password from stdin (for non-interactive use)")
-	serverCmd.Flags().String("mitm-host", "", "host the transparent MITM proxy binds to (default: --host)")
 	serverCmd.Flags().Int("mitm-port", DefaultMITMPort, "port for the transparent MITM proxy (0 = disabled)")
 	serverCmd.Flags().String("log-level", "info", "log level: info (default) or debug (per-request proxy logs)")
 	serverCmd.Flags().Int64("max-response-bytes", defaultMaxResponseBytes(), "max response body bytes streamed to agents (default: unlimited; also respects AGENT_VAULT_MAX_RESPONSE_BYTES)")
