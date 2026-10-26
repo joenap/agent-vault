@@ -254,6 +254,10 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 
 const oauthRefreshBuffer = 5 * time.Minute
 
+// oauthRefreshTimeout bounds one refresh: the token endpoint call and
+// storing its result.
+const oauthRefreshTimeout = 30 * time.Second
+
 func (p *StoreCredentialProvider) maybeRefreshOAuth(ctx context.Context, vaultID, key, currentToken string) (string, error) {
 	oauthCfg, err := p.OAuthStore.GetCredentialOAuth(ctx, vaultID, key)
 	if err != nil {
@@ -273,6 +277,11 @@ func (p *StoreCredentialProvider) maybeRefreshOAuth(ctx context.Context, vaultID
 
 	sfKey := vaultID + "|" + key
 	result := p.Refresher.Do(sfKey, func() oauth.RefreshResult {
+		// Not the request's context: once the provider rotates the refresh
+		// token, the new one must be stored even if the request that
+		// triggered the refresh hangs up (the old one is already spent).
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), oauthRefreshTimeout)
+		defer cancel()
 		refreshToken, err := crypto.Decrypt(oauthCfg.RefreshTokenCT, oauthCfg.RefreshTokenNonce, p.EncKey)
 		if err != nil {
 			return oauth.RefreshResult{Err: fmt.Errorf("%w: decrypt refresh token: %v", ErrOAuthRefreshFailed, err)}

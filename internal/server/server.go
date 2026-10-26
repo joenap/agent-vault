@@ -1167,6 +1167,14 @@ func (s *Server) Start() error {
 		return fmt.Errorf("server shutdown: %w", err)
 	}
 
+	// CONNECT tunnels were cut above, but a refresh they started keeps
+	// running on its own context; let it store the rotated token.
+	refreshCtx, cancelRefresh := context.WithTimeout(context.Background(), 35*time.Second)
+	if err := s.oauthRefresher.Wait(refreshCtx); err != nil {
+		fmt.Fprintln(os.Stderr, "warning: an OAuth refresh did not finish before shutdown")
+	}
+	cancelRefresh()
+
 	// Stop background workers (syncer + touch-cache pruner) and wait for the
 	// syncer's in-flight refreshes to drain before zeroing s.encKey.
 	stopWorkers()
