@@ -89,6 +89,25 @@ type Server struct {
 	infisicalDynamic *infisical.DynamicResolver
 	oauthRefresher   *oauth.Refresher
 	telemetry        *telemetry.Telemetry
+	// apiListener and proxyListener, when set, replace binding the API and
+	// MITM addresses: the parent passes connections in (cmd --control-fd).
+	// Such a server writes no PID file; its parent and a lifelock own it.
+	apiListener   net.Listener
+	proxyListener net.Listener
+	stopOnce      sync.Once
+	stopRequested chan struct{}
+}
+
+// SetPassedListeners makes Start serve the API on api and the MITM proxy
+// on proxy (nil: no proxy listener) instead of binding addresses, and skip
+// the PID file. Must be called before Start.
+func (s *Server) SetPassedListeners(api, proxy net.Listener) {
+	s.apiListener, s.proxyListener = api, proxy
+}
+
+// Stop shuts the server down as SIGTERM does.
+func (s *Server) Stop() {
+	s.stopOnce.Do(func() { close(s.stopRequested) })
 }
 
 // lockVault acquires the per-vault mutation lock via the store's
@@ -794,6 +813,7 @@ func New(addr string, store Store, encKey []byte, notifier *notify.Notifier, ini
 		rateLimit:      rl,
 		logSink:        requestlog.Nop{},
 		oauthRefresher: oauth.NewRefresher(),
+		stopRequested:  make(chan struct{}),
 	}
 
 	// Apply SSRF protection to OAuth token endpoint requests.
@@ -1073,9 +1093,13 @@ func (s *Server) Start() error {
 	// Bind synchronously so EADDRINUSE returns from Start() before any pidfile
 	// work happens. Keeps a foreground invocation against an already-running
 	// daemon from clobbering the daemon's PID file.
-	httpLn, err := net.Listen("tcp", s.httpServer.Addr)
-	if err != nil {
-		return fmt.Errorf("listen %s: %w", s.httpServer.Addr, err)
+	httpLn := s.apiListener
+	if httpLn == nil {
+		var err error
+		httpLn, err = net.Listen("tcp", s.httpServer.Addr)
+		if err != nil {
+			return fmt.Errorf("listen %s: %w", s.httpServer.Addr, err)
+		}
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -1124,7 +1148,10 @@ func (s *Server) Start() error {
 
 	if s.mitm != nil {
 		go func() {
-			l, err := net.Listen("tcp", s.mitm.Addr())
+			l, err := s.proxyListener, error(nil)
+			if l == nil {
+				l, err = net.Listen("tcp", s.mitm.Addr())
+			}
 			if err != nil {
 				// MITM is best-effort (e.g. default-on port conflict shouldn't
 				// kill the core HTTP server). Log and let the goroutine exit.
@@ -1138,20 +1165,23 @@ func (s *Server) Start() error {
 		}()
 	}
 
-	if err := pidfile.WriteIfFree(os.Getpid()); err != nil {
-		if errors.Is(err, pidfile.ErrAlreadyRunning) {
-			s.logger.Warn("pidfile owned by another process; not claiming or removing it")
+	if s.apiListener == nil {
+		if err := pidfile.WriteIfFree(os.Getpid()); err != nil {
+			if errors.Is(err, pidfile.ErrAlreadyRunning) {
+				s.logger.Warn("pidfile owned by another process; not claiming or removing it")
+			} else {
+				fmt.Fprintf(os.Stderr, "warning: could not write PID file: %v\n", err)
+			}
 		} else {
-			fmt.Fprintf(os.Stderr, "warning: could not write PID file: %v\n", err)
+			defer func() { _ = pidfile.Remove() }()
 		}
-	} else {
-		defer func() { _ = pidfile.Remove() }()
 	}
 
 	select {
 	case err := <-errCh:
 		return err
 	case <-stop:
+	case <-s.stopRequested:
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -98,9 +98,20 @@ var serverCmd = &cobra.Command{
 			return runDetachedChild(host, addr, mitmPort, logger, maxRespBytes, maxReqBytes)
 		}
 
-		// Pre-flight before unlocking the vault: don't make the user type a
-		// master password just to learn the port is taken.
-		if pid, err := pidfile.Read(); err == nil {
+		controlFd, _ := cmd.Flags().GetInt("control-fd")
+		var control *controlMode
+		if controlFd > 0 {
+			if detach {
+				return fmt.Errorf("--control-fd can't be used with --detach")
+			}
+			control, err = openControlMode(controlFd)
+			if err != nil {
+				return err
+			}
+			defer control.close()
+		} else if pid, err := pidfile.Read(); err == nil {
+			// Pre-flight before unlocking the vault: don't make the user type a
+			// master password just to learn the port is taken.
 			if pid != os.Getpid() && pidfile.IsRunning(pid) {
 				return fmt.Errorf("server is already running (PID %d). Use 'agent-vault server stop' to stop it first", pid)
 			}
@@ -184,6 +195,9 @@ var serverCmd = &cobra.Command{
 		defer shutdownLogs()
 		if err := attachServerExtensions(srv, host, mitmPort, masterKey.Key(), db, logger, maxRespBytes, maxReqBytes); err != nil {
 			return err
+		}
+		if control != nil {
+			control.attach(srv)
 		}
 		captureServerStart(mitmPort, db.DialectName())
 		return srv.Start()
@@ -776,6 +790,7 @@ func init() {
 	serverCmd.Flags().BoolP("detach", "d", false, "run server in background after unlocking")
 	serverCmd.Flags().Bool("password-stdin", false, "read master password from stdin (for non-interactive use)")
 	serverCmd.Flags().Int("mitm-port", DefaultMITMPort, "port for the transparent MITM proxy (0 = disabled)")
+	serverCmd.Flags().Int("control-fd", 0, "serve connections the parent passes over the Unix socket on this fd instead of binding ports; stop when the parent's end closes (no PID file)")
 	serverCmd.Flags().String("log-level", "info", "log level: info (default) or debug (per-request proxy logs)")
 	serverCmd.Flags().Int64("max-response-bytes", defaultMaxResponseBytes(), "max response body bytes streamed to agents (default: unlimited; also respects AGENT_VAULT_MAX_RESPONSE_BYTES)")
 	serverCmd.Flags().Int64("max-request-bytes", defaultMaxRequestBytes(), "max request body bytes forwarded to upstreams (default: 1 GiB; also respects AGENT_VAULT_MAX_REQUEST_BYTES)")
