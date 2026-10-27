@@ -17,6 +17,9 @@ import (
 )
 
 // Each message on the control socket is one tag byte with one descriptor.
+// Serve writes the tag byte back once it holds the descriptor: until then
+// the parent keeps its copy open, since macOS can flush a Unix socket that
+// only a message in flight refers to.
 const (
 	TagAPI   byte = 'A'
 	TagProxy byte = 'P'
@@ -81,7 +84,10 @@ func Serve(control *net.UnixConn, api, proxy *Listener) error {
 			}
 			return err
 		}
-		for _, f := range passedFiles(oob[:oobn]) {
+		files := passedFiles(oob[:oobn])
+		// The descriptors are ours now; the parent may close its copies.
+		_, _ = control.Write(tag[:1])
+		for _, f := range files {
 			c := fileConn(f)
 			switch {
 			case n == 1 && tag[0] == TagAPI:

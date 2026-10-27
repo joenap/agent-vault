@@ -126,6 +126,20 @@ func TestServe_ClosesAConnectionWithAnUnknownTagAndGoesOn(t *testing.T) {
 	roundTrip(t, near, accept(t, api))
 }
 
+func TestServe_AcksEachMessageWithItsTagOnceItHoldsTheDescriptor(t *testing.T) {
+	parent, child := controlPair(t)
+	go Serve(child, NewListener("api"), NewListener("proxy"))
+
+	for _, tag := range []byte{TagAPI, TagProxy, 'x'} {
+		pass(t, parent, tag)
+		_ = parent.SetReadDeadline(time.Now().Add(5 * time.Second))
+		ack := make([]byte, 1)
+		if _, err := io.ReadFull(parent, ack); err != nil || ack[0] != tag {
+			t.Fatalf("ack for %q: %q, %v", tag, ack, err)
+		}
+	}
+}
+
 func TestListener_AcceptFailsOnceClosed(t *testing.T) {
 	l := NewListener("api")
 	errs := make(chan error, 1)
