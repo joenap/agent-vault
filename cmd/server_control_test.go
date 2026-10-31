@@ -27,6 +27,13 @@ func passConn(t *testing.T, parent *net.UnixConn, tag byte) net.Conn {
 	if _, _, err := parent.WriteMsgUnix([]byte{tag}, syscall.UnixRights(fds[1]), nil); err != nil {
 		t.Fatal(err)
 	}
+	// macOS can flush an in-flight Unix socket whose sender already closed
+	// its copy, so keep this copy until the server acks with the tag.
+	ack := make([]byte, 1)
+	_ = parent.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := parent.Read(ack); err != nil || ack[0] != tag {
+		t.Fatalf("ack: %v, %v", ack, err)
+	}
 	_ = syscall.Close(fds[1])
 	f := os.NewFile(uintptr(fds[0]), "near")
 	defer f.Close()
