@@ -582,6 +582,21 @@ func MatchService(host string, targetPort int, path string, services []Service) 
 	return best, bestScore
 }
 
+// CoversHost reports whether any service, enabled or not, matches host and
+// targetPort on any path. A CONNECT has a host but no path, so a service
+// scoped to one path still covers its whole host there.
+func CoversHost(host string, targetPort int, services []Service) bool {
+	for i := range services {
+		if _, ok := matchHostPattern(services[i].Host, host); !ok {
+			continue
+		}
+		if services[i].Port == nil || *services[i].Port == targetPort {
+			return true
+		}
+	}
+	return false
+}
+
 // matchHostPattern reports the tier and whether pattern matches host.
 // "*." matches exactly one subdomain level (e.g. "*.github.com" matches
 // "api.github.com" but not "a.b.github.com" or the bare "github.com").

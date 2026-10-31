@@ -19,6 +19,7 @@ type fakeCredStore struct {
 	missKey      string                         // if set, GetCredential for this key returns nil/err
 	policy       UnmatchedHostPolicy            // unmatched-host policy returned by UnmatchedHostPolicy
 	brokerCfgErr error                          // if non-nil, GetBrokerConfig returns this error
+	policyErr    error                          // if non-nil, UnmatchedHostPolicy returns this error
 
 	getCredentialCalls int // call count — used by passthrough tests to assert no lookup
 }
@@ -54,6 +55,9 @@ func (f *fakeCredStore) GetCredential(_ context.Context, vaultID, key string) (*
 }
 
 func (f *fakeCredStore) UnmatchedHostPolicy(_ context.Context, _ string) (UnmatchedHostPolicy, error) {
+	if f.policyErr != nil {
+		return "", f.policyErr
+	}
 	if f.policy == "" {
 		return PolicyPassthrough, nil
 	}
@@ -336,6 +340,72 @@ func TestInject_UnmatchedHost_HostMissPassthrough(t *testing.T) {
 	if f.getCredentialCalls != 0 {
 		t.Fatalf("passthrough should not resolve credentials, got %d calls", f.getCredentialCalls)
 	}
+}
+
+func TestInject_UnmatchedHost_TunnelPolicyPassesPlainHTTPThrough(t *testing.T) {
+	f := newFakeCredStore()
+	f.policy = PolicyTunnel
+	res, err := NewStoreCredentialProvider(f, make32(0x79)).Inject(context.Background(), "v1", "api.example.com", 0, "/")
+	if err != nil || !res.Passthrough {
+		t.Fatalf("got %+v, %v; want passthrough", res, err)
+	}
+}
+
+func TestShouldTunnel(t *testing.T) {
+	port := 8443
+	off := false
+	services := []broker.Service{
+		{Host: "api.example.com", Auth: broker.Auth{Type: "bearer", Token: "T"}},
+		{Host: "*.wild.example.com", Auth: broker.Auth{Type: "bearer", Token: "T"}},
+		{Host: "scoped.example.com", Path: "/v1/*", Auth: broker.Auth{Type: "bearer", Token: "T"}},
+		{Host: "ported.example.com", Port: &port, Auth: broker.Auth{Type: "bearer", Token: "T"}},
+		{Host: "off.example.com", Enabled: &off, Auth: broker.Auth{Type: "bearer", Token: "T"}},
+	}
+	cases := []struct {
+		name   string
+		policy UnmatchedHostPolicy
+		host   string
+		port   int
+		want   bool
+	}{
+		{"an unmatched host under tunnel", PolicyTunnel, "pypi.org", 443, true},
+		{"a service's host", PolicyTunnel, "api.example.com", 443, false},
+		{"a wildcard service's host", PolicyTunnel, "a.wild.example.com", 443, false},
+		{"a path-scoped service's host: a CONNECT has no path", PolicyTunnel, "scoped.example.com", 443, false},
+		{"a port-specific service's port", PolicyTunnel, "ported.example.com", 8443, false},
+		{"another port on a port-specific host", PolicyTunnel, "ported.example.com", 443, true},
+		{"a disabled service's host, so it's still refused", PolicyTunnel, "off.example.com", 443, false},
+		{"an unmatched host under passthrough", PolicyPassthrough, "pypi.org", 443, false},
+		{"an unmatched host under deny", PolicyDeny, "pypi.org", 443, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newFakeCredStore()
+			f.policy = c.policy
+			f.setServices(t, "v1", services)
+			if got := NewStoreCredentialProvider(f, make32(0x7a)).ShouldTunnel(context.Background(), "v1", c.host, c.port); got != c.want {
+				t.Fatalf("ShouldTunnel = %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestShouldTunnel_FailsClosedWhenItCantRead(t *testing.T) {
+	t.Run("the services", func(t *testing.T) {
+		f := newFakeCredStore()
+		f.policy = PolicyTunnel
+		f.brokerCfgErr = errors.New("db down")
+		if NewStoreCredentialProvider(f, make32(0x7b)).ShouldTunnel(context.Background(), "v1", "pypi.org", 443) {
+			t.Fatal("tunnelled without knowing the services")
+		}
+	})
+	t.Run("the policy", func(t *testing.T) {
+		f := newFakeCredStore()
+		f.policyErr = errors.New("db down")
+		if NewStoreCredentialProvider(f, make32(0x7c)).ShouldTunnel(context.Background(), "v1", "pypi.org", 443) {
+			t.Fatal("tunnelled without knowing the policy")
+		}
+	})
 }
 
 func TestInject_UnmatchedHost_DenyPolicy(t *testing.T) {

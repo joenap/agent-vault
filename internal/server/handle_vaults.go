@@ -979,7 +979,7 @@ func (s *Server) handleVaultSettingsPatch(w http.ResponseWriter, r *http.Request
 		} else {
 			policy := brokercore.UnmatchedHostPolicy(val)
 			if !brokercore.IsValidUnmatchedHostPolicy(policy) {
-				jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid unmatched_host_policy %q (expected \"passthrough\" or \"deny\")", val))
+				jsonError(w, http.StatusBadRequest, fmt.Sprintf("Invalid unmatched_host_policy %q (expected \"passthrough\", \"deny\" or \"tunnel\")", val))
 				return
 			}
 			if err := s.store.SetVaultSetting(ctx, ns.ID, settingUnmatchedHostPolicy, string(policy)); err != nil {

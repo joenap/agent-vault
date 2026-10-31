@@ -87,6 +87,11 @@ func (p *Proxy) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if d, ok := p.creds.(brokercore.TunnelDecider); ok && d.ShouldTunnel(r.Context(), scope.VaultID, host, port) {
+		p.tunnel(w, r, target, scope)
+		return
+	}
+
 	hj, ok := w.(http.Hijacker)
 	if !ok {
 		http.Error(w, "hijacking not supported", http.StatusInternalServerError)

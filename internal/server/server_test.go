@@ -4529,6 +4529,23 @@ func TestVaultSettingsUnmatchedHostPolicy(t *testing.T) {
 		}
 	})
 
+	t.Run("set to tunnel", func(t *testing.T) {
+		body := strings.NewReader(`{"unmatched_host_policy": "tunnel"}`)
+		req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", body)
+		req.Header.Set("Authorization", "Bearer "+ownerToken)
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		srv.httpServer.Handler.ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+		}
+		if ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy] != "tunnel" {
+			t.Fatalf("expected stored policy=tunnel, got %q",
+				ms.vaultSettings["root-ns-id"][settingUnmatchedHostPolicy])
+		}
+	})
+
 	t.Run("invalid value rejected", func(t *testing.T) {
 		body := strings.NewReader(`{"unmatched_host_policy": "log-and-allow"}`)
 		req := httptest.NewRequest(http.MethodPatch, "/v1/vaults/default/settings", body)

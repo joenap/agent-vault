@@ -18,16 +18,20 @@ import (
 
 // UnmatchedHostPolicy controls what happens when a request's target host
 // does not match any configured broker service. PolicyPassthrough is the
-// system-wide default; PolicyDeny is the opt-in strict mode.
+// system-wide default; PolicyDeny is the opt-in strict mode. PolicyTunnel
+// forwards like passthrough, but a CONNECT to a host no service covers is
+// spliced to the upstream without terminating TLS, so the client sees the
+// upstream's own certificate.
 type UnmatchedHostPolicy string
 
 const (
 	PolicyPassthrough UnmatchedHostPolicy = "passthrough"
 	PolicyDeny        UnmatchedHostPolicy = "deny"
+	PolicyTunnel      UnmatchedHostPolicy = "tunnel"
 )
 
 func IsValidUnmatchedHostPolicy(p UnmatchedHostPolicy) bool {
-	return p == PolicyPassthrough || p == PolicyDeny
+	return p == PolicyPassthrough || p == PolicyDeny || p == PolicyTunnel
 }
 
 // InjectResult is the outcome of matching (host, path) and resolving
@@ -64,6 +68,13 @@ type InjectResult struct {
 // path only — no query, no fragment.
 type CredentialProvider interface {
 	Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error)
+}
+
+// TunnelDecider is implemented by a CredentialProvider that can splice a
+// CONNECT to its upstream. ShouldTunnel must answer false when unsure: the
+// caller then terminates TLS, the path that can enforce policy.
+type TunnelDecider interface {
+	ShouldTunnel(ctx context.Context, vaultID, targetHost string, targetPort int) bool
 }
 
 // CredentialStore is the minimal store surface used by StoreCredentialProvider.
@@ -105,14 +116,11 @@ func NewStoreCredentialProvider(s CredentialStore, encKey []byte) *StoreCredenti
 	return &StoreCredentialProvider{Store: s, EncKey: encKey}
 }
 
-// Inject matches (targetHost, targetPath) and resolves the matched
-// service's auth into HTTP headers. targetHost may include a port —
-// stripped before matching. Pass "/" for targetPath when no path is
-// meaningful.
-func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error) {
-	// A missing row is equivalent to an empty services list — fall
-	// through to the unmatched-host policy. Any other error fails closed
-	// so a transient store failure can't silently strip enforcement.
+// services reads vaultID's services, with Host in the matcher's form. A
+// missing row is equivalent to an empty list — the caller falls through to
+// the unmatched-host policy. Any other error fails closed so a transient
+// store failure can't silently strip enforcement.
+func (p *StoreCredentialProvider) services(ctx context.Context, vaultID string) ([]broker.Service, error) {
 	cfg, err := p.Store.GetBrokerConfig(ctx, vaultID)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrServiceNotFound
@@ -128,6 +136,33 @@ func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHos
 	// requires Host without "/", so split before matching.
 	for i := range services {
 		services[i].Host, services[i].Path, services[i].Port = broker.SplitInlineHost(services[i].Host, services[i].Path)
+	}
+	return services, nil
+}
+
+// ShouldTunnel reports whether a CONNECT to targetHost may skip TLS
+// termination: the vault's policy is PolicyTunnel and no service covers the
+// host. Any store error answers false.
+func (p *StoreCredentialProvider) ShouldTunnel(ctx context.Context, vaultID, targetHost string, targetPort int) bool {
+	policy, err := p.Store.UnmatchedHostPolicy(ctx, vaultID)
+	if err != nil || policy != PolicyTunnel {
+		return false
+	}
+	services, err := p.services(ctx, vaultID)
+	if err != nil {
+		return false
+	}
+	return !broker.CoversHost(targetHost, targetPort, services)
+}
+
+// Inject matches (targetHost, targetPath) and resolves the matched
+// service's auth into HTTP headers. targetHost may include a port —
+// stripped before matching. Pass "/" for targetPath when no path is
+// meaningful.
+func (p *StoreCredentialProvider) Inject(ctx context.Context, vaultID, targetHost string, targetPort int, targetPath string) (*InjectResult, error) {
+	services, err := p.services(ctx, vaultID)
+	if err != nil {
+		return nil, err
 	}
 	// Heal legacy unnamed entries so MatchedName (which lands in the
 	// request log and the X-Vault-Service header) is never blank for a
