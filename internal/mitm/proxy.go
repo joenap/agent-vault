@@ -8,7 +8,8 @@
 //     demand by a ca.Provider, and forwards each tunnelled HTTP/1.1
 //     request to the originally-requested upstream over a fresh TLS
 //     connection with strict verification against the system trust
-//     store.
+//     store. Under the tunnel policy, a CONNECT to a host no service
+//     covers is spliced to the upstream instead (tunnel.go).
 //
 //   - Absolute-form forward-proxy requests (e.g. POST http://host/path
 //     HTTP/1.1, RFC 7230 §5.3.2) — for plain-HTTP upstreams. The proxy
